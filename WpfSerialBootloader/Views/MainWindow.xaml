@@ -1,0 +1,106 @@
+﻿<Window x:Class="WpfSerialBootloader.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:WpfSerialBootloader"
+        xmlns:viewmodels="clr-namespace:WpfSerialBootloader.ViewModels"
+        xmlns:models="clr-namespace:WpfSerialBootloader.Models"
+        mc:Ignorable="d"
+        Title="WPF Serial Bootloader" Height="600" Width="Auto" MinHeight="450" MinWidth="940">
+
+    <Window.DataContext>
+        <viewmodels:MainViewModel/>
+    </Window.DataContext>
+
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BooleanToVisibilityConverter"/>
+        <local:InverseBooleanConverter x:Key="InverseBooleanConverter"/>
+    </Window.Resources>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0" Padding="5" BorderBrush="LightGray" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+
+                <StackPanel Grid.Column="0" Orientation="Horizontal">
+                    <TextBlock Text="Port:" VerticalAlignment="Center" Margin="5"/>
+                    <ComboBox ItemsSource="{Binding AvailablePorts}" SelectedItem="{Binding SelectedPort}" MinWidth="120" Margin="5"/>
+                    <Button Content="Scan" Command="{Binding ScanPortsCommand}" Margin="5,5,15,5"/>
+                    <TextBlock Text="Baud:" VerticalAlignment="Center" Margin="5"/>
+                    <TextBox Text="{Binding BaudRate, UpdateSourceTrigger=PropertyChanged}" MinWidth="80" Margin="5"/>
+                    <Button Content="Connect" Command="{Binding ConnectCommand}" IsEnabled="{Binding IsConnectionPossible}" Visibility="{Binding IsConnected, Converter={StaticResource InverseBooleanConverter}}" Margin="15,5,5,5" Padding="10,0"/>
+                    <Button Content="Disconnect" Command="{Binding DisconnectCommand}" Visibility="{Binding IsConnected, Converter={StaticResource BooleanToVisibilityConverter}}" Margin="15,5,5,5" Padding="10,0"/>
+                </StackPanel>
+
+                <StackPanel Grid.Column="2" Orientation="Horizontal">
+                    <TextBox Text="{Binding FirmwareFilePath}" IsReadOnly="True" MinWidth="200" Margin="5"/>
+                    <Button Content="Browse..." Command="{Binding BrowseFileCommand}" Margin="5"/>
+                    <Button Content="Upload Firmware" Command="{Binding UploadFirmwareCommand}" IsEnabled="{Binding IsConnected}" Margin="15,5,5,5" Padding="10,0"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <ScrollViewer Grid.Row="1" x:Name="TerminalScrollViewer" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <ItemsControl ItemsSource="{Binding TerminalOutput}" Margin="5">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate DataType="{x:Type models:TerminalMessage}">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Text="{Binding FormattedHeader}" FontWeight="Bold"/>
+                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" Margin="5,0,0,0">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.TX}">
+                                                <Setter Property="Foreground" Value="MediumBlue"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX}">
+                                                <Setter Property="Foreground" Value="DarkGreen"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </StackPanel>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <Grid Grid.Row="2" Margin="5,0,5,5">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            <TextBox Grid.Column="0" 
+                     Text="{Binding UserInput, UpdateSourceTrigger=PropertyChanged}" 
+                     IsEnabled="{Binding IsConnected}"
+                     AcceptsReturn="False">
+                <TextBox.InputBindings>
+                    <KeyBinding Key="Enter" Command="{Binding SendCommand}"/>
+                </TextBox.InputBindings>
+            </TextBox>
+            <Button Grid.Column="1" Content="Send" Command="{Binding SendCommand}" IsEnabled="{Binding IsConnected}" Margin="5,0,0,0" Padding="20,0"/>
+        </Grid>
+
+        <StatusBar Grid.Row="3">
+            <StatusBarItem>
+                <TextBlock Text="{Binding StatusText}" />
+            </StatusBarItem>
+            <StatusBarItem HorizontalAlignment="Right">
+                <ProgressBar Value="{Binding UploadProgress}" Visibility="{Binding IsUploading, Converter={StaticResource BooleanToVisibilityConverter}}" Width="200" Height="16"/>
+            </StatusBarItem>
+        </StatusBar>
+    </Grid>
+</Window>
