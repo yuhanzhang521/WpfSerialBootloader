@@ -3,24 +3,18 @@
     public enum MessageDirection
     {
         TX, // Transmit (Host to Device)
-        RX  // Receive (Device to Host)
+        RX, // Receive (Device to Host)
+        INFO // Informational message
     }
 
     /// <summary>
     /// Represents a single message displayed in the terminal.
     /// </summary>
-    public class TerminalMessage
+    public class TerminalMessage(MessageDirection direction, string content)
     {
-        public DateTime Timestamp { get; }
-        public MessageDirection Direction { get; }
-        public string Content { get; }
+        public DateTime Timestamp { get; } = DateTime.Now;
+        public MessageDirection Direction { get; } = direction;
+        public string Content { get; } = content;
         public string FormattedHeader => $"[{Timestamp:HH:mm:ss.fff}] {Direction} >";
-
-        public TerminalMessage(MessageDirection direction, string content)
-        {
-            Timestamp = DateTime.Now;
-            Direction = direction;
-            Content = content;
-        }
     }
 }

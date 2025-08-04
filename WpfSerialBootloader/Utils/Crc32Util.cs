@@ -3,7 +3,7 @@
     /// <summary>
     /// Computes a CRC32 checksum compatible with the specific configuration used in the Python script.
     /// Configuration:
-    ///  - Polynomial: 0x04C11DB7
+    ///  - Polynomial: 0x04C11DB7 (Normal), which is 0xEDB88320 (Reflected)
     ///  - Initial Value: 0xFFFFFFFF
     ///  - Final XOR Value: 0xFFFFFFFF
     ///  - Reverse Input: True
@@ -11,7 +11,7 @@
     /// </summary>
     public static class Crc32Util
     {
-        private const uint Polynomial = 0x04C11DB7;
+        private const uint Polynomial = 0xEDB88320;
         private static readonly uint[] table;
 
         static Crc32Util()

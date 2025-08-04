@@ -7,7 +7,7 @@
         xmlns:viewmodels="clr-namespace:WpfSerialBootloader.ViewModels"
         xmlns:models="clr-namespace:WpfSerialBootloader.Models"
         mc:Ignorable="d"
-        Title="WPF Serial Bootloader" Height="600" Width="Auto" MinHeight="450" MinWidth="940">
+        Title="WPF Serial Bootloader" Height="600" Width="960" MinHeight="450" MinWidth="940">
 
     <Window.DataContext>
         <viewmodels:MainViewModel/>
@@ -45,7 +45,7 @@
                 </StackPanel>
 
                 <StackPanel Grid.Column="2" Orientation="Horizontal">
-                    <TextBox Text="{Binding FirmwareFilePath}" IsReadOnly="True" MinWidth="200" Margin="5"/>
+                    <TextBox Text="{Binding FirmwareFilePath}" IsReadOnly="True" Width="200" Margin="5"/>
                     <Button Content="Browse..." Command="{Binding BrowseFileCommand}" Margin="5"/>
                     <Button Content="Upload Firmware" Command="{Binding UploadFirmwareCommand}" IsEnabled="{Binding IsConnected}" Margin="15,5,5,5" Padding="10,0"/>
                 </StackPanel>
@@ -58,9 +58,17 @@
                     <DataTemplate DataType="{x:Type models:TerminalMessage}">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock Text="{Binding FormattedHeader}" FontWeight="Bold"/>
-                            <TextBlock Text="{Binding Content}" TextWrapping="Wrap" Margin="5,0,0,0">
-                                <TextBlock.Style>
-                                    <Style TargetType="TextBlock">
+
+                            <TextBox Text="{Binding Content, Mode=OneWay}"
+                                 TextWrapping="Wrap"
+                                 Margin="5,0,0,0"
+                                 IsReadOnly="True"              
+                                 BorderThickness="0"            
+                                 Background="Transparent"
+                                 IsReadOnlyCaretVisible="False">
+                                <TextBox.Style>
+                                    <Style TargetType="TextBox">
+                                        <Setter Property="Foreground" Value="Black" />
                                         <Style.Triggers>
                                             <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.TX}">
                                                 <Setter Property="Foreground" Value="MediumBlue"/>
@@ -68,10 +76,13 @@
                                             <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX}">
                                                 <Setter Property="Foreground" Value="DarkGreen"/>
                                             </DataTrigger>
+                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.INFO}">
+                                                <Setter Property="Foreground" Value="DarkSlateGray"/>
+                                            </DataTrigger>
                                         </Style.Triggers>
                                     </Style>
-                                </TextBlock.Style>
-                            </TextBlock>
+                                </TextBox.Style>
+                            </TextBox>
                         </StackPanel>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
@@ -99,7 +110,30 @@
                 <TextBlock Text="{Binding StatusText}" />
             </StatusBarItem>
             <StatusBarItem HorizontalAlignment="Right">
-                <ProgressBar Value="{Binding UploadProgress}" Visibility="{Binding IsUploading, Converter={StaticResource BooleanToVisibilityConverter}}" Width="200" Height="16"/>
+                <Grid Visibility="{Binding IsUploading, Converter={StaticResource BooleanToVisibilityConverter}}">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0"
+                       Text="{Binding UploadSpeed}"
+                       Margin="0,0,10,0"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+
+                    <TextBlock Grid.Column="1"
+                       Text="{Binding UploadRemainingTime}"
+                       Margin="0,0,10,0"
+                       FontWeight="SemiBold"
+                       VerticalAlignment="Center" />
+
+                    <ProgressBar Grid.Column="2"
+                         Value="{Binding UploadProgress}"
+                         Width="200"
+                         Height="16" />
+                </Grid>
             </StatusBarItem>
         </StatusBar>
     </Grid>

@@ -2,6 +2,7 @@
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Windows;
@@ -22,7 +23,7 @@ namespace WpfSerialBootloader.ViewModels
 
         [ObservableProperty]
         [NotifyPropertyChangedFor(nameof(IsConnectionPossible))]
-        private int baudRate = 115200;
+        private int baudRate = Properties.Settings.Default.LastUsedBaudRate;
 
         [ObservableProperty]
         [NotifyCanExecuteChangedFor(nameof(ConnectCommand))]
@@ -32,7 +33,7 @@ namespace WpfSerialBootloader.ViewModels
         private bool isConnected = false;
 
         [ObservableProperty]
-        private string firmwareFilePath = string.Empty;
+        private string firmwareFilePath = Properties.Settings.Default.LastUsedFilePath ?? String.Empty;
 
         [ObservableProperty]
         private string userInput = string.Empty;
@@ -46,6 +47,12 @@ namespace WpfSerialBootloader.ViewModels
         [ObservableProperty]
         private string statusText = "Ready";
 
+        [ObservableProperty]
+        private string uploadSpeed = "0 KB/s";
+
+        [ObservableProperty]
+        private string uploadRemainingTime = "N/A";
+
         public ObservableCollection<TerminalMessage> TerminalOutput { get; } = [];
 
         public bool IsConnectionPossible => !string.IsNullOrEmpty(SelectedPort);
@@ -57,9 +64,14 @@ namespace WpfSerialBootloader.ViewModels
             serialService_.ConnectionLost += OnSerialConnectionLost;
 
             ScanPorts();
+
             if (AvailablePorts.Any())
             {
-                SelectedPort = AvailablePorts[0];
+                var lastUsedPort = Properties.Settings.Default.LastUsedComPort;
+
+                var portToSelect = AvailablePorts.FirstOrDefault(p => p == lastUsedPort);
+
+                SelectedPort = portToSelect ?? AvailablePorts[0];
             }
         }
 
@@ -69,7 +81,7 @@ namespace WpfSerialBootloader.ViewModels
             {
                 IsConnected = false;
                 StatusText = "Error: Device disconnected.";
-                AddLogMessage(MessageDirection.RX, "--- CONNECTION LOST ---");
+                AddLogMessage(MessageDirection.INFO, "--- CONNECTION LOST ---");
             });
         }
 
@@ -107,7 +119,11 @@ namespace WpfSerialBootloader.ViewModels
                 serialService_.Connect(SelectedPort, BaudRate);
                 IsConnected = true;
                 StatusText = $"Connected to {SelectedPort} at {BaudRate} bps.";
-                AddLogMessage(MessageDirection.RX, "--- CONNECTED ---");
+                AddLogMessage(MessageDirection.INFO, $"--- CONNECTED TO {SelectedPort} ---");
+
+                Properties.Settings.Default.LastUsedComPort = SelectedPort;
+                Properties.Settings.Default.LastUsedBaudRate = BaudRate;
+                Properties.Settings.Default.Save();
             }
             catch (Exception ex)
             {
@@ -122,7 +138,7 @@ namespace WpfSerialBootloader.ViewModels
             serialService_.Disconnect();
             IsConnected = false;
             StatusText = "Disconnected.";
-            AddLogMessage(MessageDirection.RX, "--- DISCONNECTED ---");
+            AddLogMessage(MessageDirection.INFO, "--- DISCONNECTED ---");
         }
 
         [RelayCommand]
@@ -133,9 +149,24 @@ namespace WpfSerialBootloader.ViewModels
                 Filter = "Hex files (*.hex)|*.hex|All files (*.*)|*.*",
                 Title = "Select a firmware file"
             };
+
+            string lastPath = Properties.Settings.Default.LastUsedFilePath;
+
+            if (!string.IsNullOrEmpty(lastPath) && Directory.Exists(lastPath))
+            {
+                openFileDialog.InitialDirectory = Path.GetDirectoryName(lastPath);
+            }
+
             if (openFileDialog.ShowDialog() == true)
             {
+                // A file was successfully selected.
                 FirmwareFilePath = openFileDialog.FileName;
+
+                string? currentPath = FirmwareFilePath;
+
+                // 5. Save the new directory back to the settings for next time.
+                Properties.Settings.Default.LastUsedFilePath = currentPath;
+                Properties.Settings.Default.Save(); // This is crucial to persist the change!
             }
         }
 
@@ -156,8 +187,8 @@ namespace WpfSerialBootloader.ViewModels
                 // 1. Load and parse firmware file
                 StatusText = "Reading and parsing firmware...";
                 var firmware = new Firmware(FirmwareFilePath);
-                AddLogMessage(MessageDirection.TX, $"Preparing to upload '{Path.GetFileName(FirmwareFilePath)}' ({firmware.TotalSize} bytes)");
-                AddLogMessage(MessageDirection.TX, $"Calculated CRC32: 0x{BitConverter.ToUInt32(firmware.CrcBytes, 0):X8}");
+                AddLogMessage(MessageDirection.INFO, $"Preparing to upload '{Path.GetFileName(FirmwareFilePath)}' ({firmware.TotalSize} bytes)");
+                AddLogMessage(MessageDirection.INFO, $"Calculated CRC32: 0x{BitConverter.ToUInt32(firmware.CrcBytes, 0):X8}");
 
                 // 2. Send data sequentially
                 StatusText = "Uploading: Sending magic word...";
@@ -169,26 +200,50 @@ namespace WpfSerialBootloader.ViewModels
                 await Task.Delay(10);
 
                 StatusText = "Uploading: Sending payload...";
-                int chunkSize = 256;
+                int chunkSize = 1024; // Using a slightly larger chunk size
+                long bytesSentSoFar = 0;
+                var stopwatch = new Stopwatch();
+                stopwatch.Start(); // Start timing right before payload transfer
+
                 for (int i = 0; i < firmware.TotalSize; i += chunkSize)
                 {
                     int size = Math.Min(chunkSize, firmware.TotalSize - i);
                     var chunk = new byte[size];
                     Array.Copy(firmware.Payload, i, chunk, 0, size);
                     await serialService_.WriteAsync(chunk);
-                    UploadProgress = ((double)(i + size) / firmware.TotalSize) * 100;
+
+                    bytesSentSoFar += size;
+                    UploadProgress = ((double)bytesSentSoFar / firmware.TotalSize) * 100;
+
+                    var elapsedSeconds = stopwatch.Elapsed.TotalSeconds;
+                    if (elapsedSeconds > 0.1) // Update speed and remaining time only after a short moment
+                    {
+                        double speed = bytesSentSoFar / elapsedSeconds; // Bytes per second
+                        if (speed > 1024 * 1024)
+                            UploadSpeed = $"{speed / (1024 * 1024):F2} MB/s";
+                        else if (speed > 1024)
+                            UploadSpeed = $"{speed / 1024:F2} KB/s";
+                        else
+                            UploadSpeed = $"{(int)speed} B/s";
+
+                        // Calculate and update remaining time
+                        double bytesLeft = firmware.TotalSize - bytesSentSoFar;
+                        double remainingSeconds = speed > 0 ? bytesLeft / speed : 0;
+                        UploadRemainingTime = $"{elapsedSeconds:F0}s < {remainingSeconds:F0} s";
+                    }
                 }
+                stopwatch.Stop();
 
                 StatusText = "Uploading: Sending CRC...";
                 await serialService_.WriteAsync(firmware.CrcBytes);
 
                 StatusText = "Firmware upload complete!";
-                AddLogMessage(MessageDirection.TX, "--- UPLOAD COMPLETE ---");
+                AddLogMessage(MessageDirection.INFO, "--- UPLOAD COMPLETE ---");
             }
             catch (Exception ex)
             {
                 StatusText = $"Error during upload: {ex.Message}";
-                AddLogMessage(MessageDirection.RX, $"--- UPLOAD FAILED: {ex.Message} ---");
+                AddLogMessage(MessageDirection.INFO, $"--- UPLOAD FAILED: {ex.Message} ---");
             }
             finally
             {
