@@ -1,9 +1,12 @@
-﻿using CommunityToolkit.Mvvm.ComponentModel;
+﻿// Add this using statement for WMI to get detailed port names.
+// You may need to add the NuGet package: System.Management
+using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Management;
 using System.Text;
 using System.Windows;
 using WpfSerialBootloader.Models;
@@ -15,6 +18,7 @@ namespace WpfSerialBootloader.ViewModels
     {
         private readonly SerialPortService serialService_;
 
+        #region Observable Properties
         [ObservableProperty]
         private ObservableCollection<string> availablePorts = [];
 
@@ -33,7 +37,7 @@ namespace WpfSerialBootloader.ViewModels
         private bool isConnected = false;
 
         [ObservableProperty]
-        private string firmwareFilePath = Properties.Settings.Default.LastUsedFilePath ?? String.Empty;
+        private string firmwareFilePath = Properties.Settings.Default.LastUsedFilePath ?? string.Empty;
 
         [ObservableProperty]
         private string userInput = string.Empty;
@@ -52,10 +56,83 @@ namespace WpfSerialBootloader.ViewModels
 
         [ObservableProperty]
         private string uploadRemainingTime = "N/A";
+        #endregion
 
+        #region Public Properties
         public ObservableCollection<TerminalMessage> TerminalOutput { get; } = [];
 
         public bool IsConnectionPossible => !string.IsNullOrEmpty(SelectedPort);
+        #endregion
+
+
+        #region Relay Commands
+        [RelayCommand]
+        private void ScanPorts()
+        {
+            try
+            {
+                // Use WMI to get ports with their descriptions for a better user experience
+                using var searcher = new ManagementObjectSearcher("SELECT * FROM Win32_PnPEntity WHERE Caption LIKE '%(COM%'");
+                var portObjects = searcher.Get().Cast<ManagementObject>().ToList();
+
+                var detailedPorts = SerialPortService.GetAvailablePorts()
+                    .Select(p =>
+                    {
+                        var portObject = portObjects.FirstOrDefault(o => o["Caption"]?.ToString()?.Contains($"({p})") ?? false);
+                        var caption = portObject?["Caption"]?.ToString() ?? p;
+                        return $"{p} - {caption.Replace($"({p})", "").Trim()}";
+                    })
+                    .ToList();
+
+                AvailablePorts = new ObservableCollection<string>(detailedPorts);
+                StatusText = "Refreshed serial ports.";
+            }
+            catch (Exception ex)
+            {
+                // Fallback to simple port names if WMI fails
+                AvailablePorts = new ObservableCollection<string>(SerialPortService.GetAvailablePorts());
+                StatusText = "Refreshed serial ports (WMI failed).";
+                Debug.WriteLine($"WMI query for serial ports failed: {ex.Message}");
+            }
+        }
+
+        [RelayCommand(CanExecute = nameof(IsConnectionPossible))]
+        private void Connect()
+        {
+            PerformConnect();
+        }
+
+        [RelayCommand(CanExecute = nameof(IsConnected))]
+        private void Disconnect()
+        {
+            PerformDisconnect();
+        }
+
+        [RelayCommand]
+        private void BrowseFile()
+        {
+            PerformFileBrowse();
+        }
+
+        [RelayCommand(CanExecute = nameof(IsConnected))]
+        private async Task UploadFirmware()
+        {
+            await PerformFirmwareUploadAsync();
+        }
+
+        [RelayCommand(CanExecute = nameof(IsConnected))]
+        private async Task Send()
+        {
+            await PerformSendAsync();
+        }
+
+        [RelayCommand]
+        private void ClearTerminal()
+        {
+            TerminalOutput.Clear();
+            AddLogMessage(MessageDirection.INFO, "--- TERMINAL CLEARED ---");
+        }
+        #endregion
 
         public MainViewModel()
         {
@@ -67,61 +144,37 @@ namespace WpfSerialBootloader.ViewModels
 
             if (AvailablePorts.Any())
             {
+                // Try to restore the last used port
                 var lastUsedPort = Properties.Settings.Default.LastUsedComPort;
-
-                var portToSelect = AvailablePorts.FirstOrDefault(p => p == lastUsedPort);
-
-                SelectedPort = portToSelect ?? AvailablePorts[0];
+                if (!string.IsNullOrEmpty(lastUsedPort))
+                {
+                    // Find the port that starts with the saved name (e.g., "COM3")
+                    var portToSelect = AvailablePorts.FirstOrDefault(p => p.StartsWith(lastUsedPort));
+                    SelectedPort = portToSelect ?? AvailablePorts[0];
+                }
+                else
+                {
+                    SelectedPort = AvailablePorts[0];
+                }
             }
         }
 
-        private void OnSerialConnectionLost()
+        #region Command Logic Implementation
+        private void PerformConnect()
         {
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                IsConnected = false;
-                StatusText = "Error: Device disconnected.";
-                AddLogMessage(MessageDirection.INFO, "--- CONNECTION LOST ---");
-            });
-        }
-
-        private void OnSerialDataReceived(string data)
-        {
-            // Data is received on a background thread, so we must dispatch to the UI thread.
-            Application.Current.Dispatcher.Invoke(() =>
-            {
-                AddLogMessage(MessageDirection.RX, data.Trim());
-            });
-        }
-
-        private void AddLogMessage(MessageDirection direction, string message)
-        {
-            if (TerminalOutput.Count > 2000) // Keep the log from growing indefinitely
-            {
-                TerminalOutput.RemoveAt(0);
-            }
-            TerminalOutput.Add(new TerminalMessage(direction, message));
-        }
-
-        [RelayCommand]
-        private void ScanPorts()
-        {
-            AvailablePorts = new ObservableCollection<string>(SerialPortService.GetAvailablePorts());
-            StatusText = "Refreshed serial ports.";
-        }
-
-        [RelayCommand(CanExecute = nameof(IsConnectionPossible))]
-        private void Connect()
-        {
-            if (IsConnected) return;
+            if (IsConnected || string.IsNullOrEmpty(SelectedPort)) return;
             try
             {
-                serialService_.Connect(SelectedPort, BaudRate);
+                // Extract port name (e.g., "COM3") from the full string "COM3 - Description"
+                string portName = SelectedPort.Split(' ')[0];
+
+                serialService_.Connect(portName, BaudRate);
                 IsConnected = true;
                 StatusText = $"Connected to {SelectedPort} at {BaudRate} bps.";
                 AddLogMessage(MessageDirection.INFO, $"--- CONNECTED TO {SelectedPort} ---");
 
-                Properties.Settings.Default.LastUsedComPort = SelectedPort;
+                // Save settings
+                Properties.Settings.Default.LastUsedComPort = portName;
                 Properties.Settings.Default.LastUsedBaudRate = BaudRate;
                 Properties.Settings.Default.Save();
             }
@@ -131,8 +184,7 @@ namespace WpfSerialBootloader.ViewModels
             }
         }
 
-        [RelayCommand(CanExecute = nameof(IsConnected))]
-        private void Disconnect()
+        private void PerformDisconnect()
         {
             if (!IsConnected) return;
             serialService_.Disconnect();
@@ -141,8 +193,7 @@ namespace WpfSerialBootloader.ViewModels
             AddLogMessage(MessageDirection.INFO, "--- DISCONNECTED ---");
         }
 
-        [RelayCommand]
-        private void BrowseFile()
+        private void PerformFileBrowse()
         {
             var openFileDialog = new OpenFileDialog
             {
@@ -151,59 +202,50 @@ namespace WpfSerialBootloader.ViewModels
             };
 
             string lastPath = Properties.Settings.Default.LastUsedFilePath;
-
-            if (!string.IsNullOrEmpty(lastPath) && Directory.Exists(lastPath))
+            if (!string.IsNullOrEmpty(lastPath) && !string.IsNullOrEmpty(Path.GetDirectoryName(lastPath)) && Directory.Exists(Path.GetDirectoryName(lastPath)))
             {
                 openFileDialog.InitialDirectory = Path.GetDirectoryName(lastPath);
             }
 
             if (openFileDialog.ShowDialog() == true)
             {
-                // A file was successfully selected.
                 FirmwareFilePath = openFileDialog.FileName;
-
-                string? currentPath = FirmwareFilePath;
-
-                // 5. Save the new directory back to the settings for next time.
-                Properties.Settings.Default.LastUsedFilePath = currentPath;
-                Properties.Settings.Default.Save(); // This is crucial to persist the change!
+                Properties.Settings.Default.LastUsedFilePath = FirmwareFilePath;
+                Properties.Settings.Default.Save();
             }
         }
 
-        [RelayCommand(CanExecute = nameof(IsConnected))]
-        private async Task UploadFirmware()
+        private async Task PerformFirmwareUploadAsync()
         {
-            if (string.IsNullOrEmpty(FirmwareFilePath))
+            if (string.IsNullOrEmpty(FirmwareFilePath) || !File.Exists(FirmwareFilePath))
             {
-                StatusText = "Please select a firmware file first.";
+                StatusText = "Please select a valid firmware file first.";
                 return;
             }
 
             IsUploading = true;
             UploadProgress = 0;
+            var stopwatch = Stopwatch.StartNew();
 
             try
             {
-                // 1. Load and parse firmware file
                 StatusText = "Reading and parsing firmware...";
                 var firmware = new Firmware(FirmwareFilePath);
+                AddLogMessage(MessageDirection.INFO, "--- UPLOAD START ---");
                 AddLogMessage(MessageDirection.INFO, $"Preparing to upload '{Path.GetFileName(FirmwareFilePath)}' ({firmware.TotalSize} bytes)");
                 AddLogMessage(MessageDirection.INFO, $"Calculated CRC32: 0x{BitConverter.ToUInt32(firmware.CrcBytes, 0):X8}");
 
-                // 2. Send data sequentially
                 StatusText = "Uploading: Sending magic word...";
                 await serialService_.WriteAsync(firmware.MagicBytes);
-                await Task.Delay(10); // Small delay like in the python script
+                await Task.Delay(10);
 
                 StatusText = "Uploading: Sending program size...";
                 await serialService_.WriteAsync(firmware.SizeBytes);
                 await Task.Delay(10);
 
                 StatusText = "Uploading: Sending payload...";
-                int chunkSize = 1024; // Using a slightly larger chunk size
+                const int chunkSize = 1024;
                 long bytesSentSoFar = 0;
-                var stopwatch = new Stopwatch();
-                stopwatch.Start(); // Start timing right before payload transfer
 
                 for (int i = 0; i < firmware.TotalSize; i += chunkSize)
                 {
@@ -213,26 +255,9 @@ namespace WpfSerialBootloader.ViewModels
                     await serialService_.WriteAsync(chunk);
 
                     bytesSentSoFar += size;
-                    UploadProgress = ((double)bytesSentSoFar / firmware.TotalSize) * 100;
-
-                    var elapsedSeconds = stopwatch.Elapsed.TotalSeconds;
-                    if (elapsedSeconds > 0.1) // Update speed and remaining time only after a short moment
-                    {
-                        double speed = bytesSentSoFar / elapsedSeconds; // Bytes per second
-                        if (speed > 1024 * 1024)
-                            UploadSpeed = $"{speed / (1024 * 1024):F2} MB/s";
-                        else if (speed > 1024)
-                            UploadSpeed = $"{speed / 1024:F2} KB/s";
-                        else
-                            UploadSpeed = $"{(int)speed} B/s";
-
-                        // Calculate and update remaining time
-                        double bytesLeft = firmware.TotalSize - bytesSentSoFar;
-                        double remainingSeconds = speed > 0 ? bytesLeft / speed : 0;
-                        UploadRemainingTime = $"{elapsedSeconds:F0}s < {remainingSeconds:F0} s";
-                    }
+                    UploadProgress = (double)bytesSentSoFar / firmware.TotalSize * 100;
+                    UpdateUploadStats(bytesSentSoFar, firmware.TotalSize, stopwatch.Elapsed);
                 }
-                stopwatch.Stop();
 
                 StatusText = "Uploading: Sending CRC...";
                 await serialService_.WriteAsync(firmware.CrcBytes);
@@ -247,13 +272,13 @@ namespace WpfSerialBootloader.ViewModels
             }
             finally
             {
+                stopwatch.Stop();
                 IsUploading = false;
                 UploadProgress = 0;
             }
         }
 
-        [RelayCommand(CanExecute = nameof(IsConnected))]
-        private async Task Send()
+        private async Task PerformSendAsync()
         {
             if (string.IsNullOrEmpty(UserInput)) return;
 
@@ -271,5 +296,53 @@ namespace WpfSerialBootloader.ViewModels
                 StatusText = $"Send error: {ex.Message}";
             }
         }
+        #endregion
+
+        #region Private Helpers & Event Handlers
+        private void OnSerialConnectionLost()
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                IsConnected = false;
+                StatusText = "Error: Device disconnected.";
+                AddLogMessage(MessageDirection.INFO, "--- CONNECTION LOST ---");
+            });
+        }
+
+        private void OnSerialDataReceived(string data)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                AddLogMessage(MessageDirection.RX, data.Trim());
+            });
+        }
+
+        private void AddLogMessage(MessageDirection direction, string message)
+        {
+            if (TerminalOutput.Count > 2000) // Keep the log from growing indefinitely
+            {
+                TerminalOutput.RemoveAt(0);
+            }
+            TerminalOutput.Add(new TerminalMessage(direction, message));
+        }
+
+        private void UpdateUploadStats(long bytesSent, long totalBytes, TimeSpan elapsed)
+        {
+            var elapsedSeconds = elapsed.TotalSeconds;
+            if (elapsedSeconds < 0.1) return; // Avoid division by zero or skewed initial readings
+
+            double speed = bytesSent / elapsedSeconds; // Bytes per second
+            if (speed > 1024 * 1024)
+                UploadSpeed = $"{speed / (1024 * 1024):F2} MB/s";
+            else if (speed > 1024)
+                UploadSpeed = $"{speed / 1024:F2} KB/s";
+            else
+                UploadSpeed = $"{(int)speed} B/s";
+
+            double bytesLeft = totalBytes - bytesSent;
+            double remainingSeconds = speed > 0 ? bytesLeft / speed : 0;
+            UploadRemainingTime = $"{TimeSpan.FromSeconds(remainingSeconds):m\\:ss}";
+        }
+        #endregion
     }
 }

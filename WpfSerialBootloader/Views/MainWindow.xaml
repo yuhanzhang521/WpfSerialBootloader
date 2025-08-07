@@ -8,7 +8,7 @@
     xmlns:models="clr-namespace:WpfSerialBootloader.Models"
     xmlns:viewmodels="clr-namespace:WpfSerialBootloader.ViewModels"
     Title="WPF Serial Bootloader"
-    Width="960"
+    Width="1030"
     Height="600"
     MinWidth="940"
     MinHeight="450"
@@ -127,7 +127,7 @@
                                                 <Setter Property="Foreground" Value="MediumBlue" />
                                             </DataTrigger>
                                             <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX}">
-                                                <Setter Property="Foreground" Value="DarkGreen" />
+                                                <Setter Property="Foreground" Value="Green" />
                                             </DataTrigger>
                                             <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.INFO}">
                                                 <Setter Property="Foreground" Value="DarkSlateGray" />
@@ -146,6 +146,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*" />
                 <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
             <TextBox
                 Grid.Column="0"
@@ -163,6 +164,12 @@
                 Command="{Binding SendCommand}"
                 Content="Send"
                 IsEnabled="{Binding IsConnected}" />
+            <Button
+                Grid.Column="2"
+                Margin="5,0,0,0"
+                Padding="20,0"
+                Command="{Binding ClearTerminalCommand}"
+                Content="Clear" />
         </Grid>
 
         <StatusBar Grid.Row="3">
