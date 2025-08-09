@@ -8,7 +8,7 @@
     xmlns:models="clr-namespace:WpfSerialBootloader.Models"
     xmlns:viewmodels="clr-namespace:WpfSerialBootloader.ViewModels"
     Title="WPF Serial Bootloader"
-    Width="1030"
+    Width="1130"
     Height="600"
     MinWidth="940"
     MinHeight="450"
@@ -51,6 +51,7 @@
                     <ComboBox
                         MinWidth="120"
                         Margin="5"
+                        VerticalAlignment="Center"
                         ItemsSource="{Binding AvailablePorts}"
                         SelectedItem="{Binding SelectedPort}" />
                     <Button
@@ -64,6 +65,7 @@
                     <TextBox
                         MinWidth="80"
                         Margin="5"
+                        VerticalAlignment="Center"
                         Text="{Binding BaudRate, UpdateSourceTrigger=PropertyChanged}" />
                     <Button
                         Margin="15,5,5,5"
@@ -84,6 +86,7 @@
                     <TextBox
                         Width="200"
                         Margin="5"
+                        VerticalAlignment="Center"
                         IsReadOnly="True"
                         Text="{Binding FirmwareFilePath}" />
                     <Button
@@ -92,6 +95,13 @@
                         Content="Browse..." />
                     <Button
                         Margin="15,5,5,5"
+                        Padding="10,0"
+                        Command="{Binding ResetProgramCommand}"
+                        Content="Reset Program"
+                        IsEnabled="{Binding IsConnected}"
+                        ToolTip="Pulse DTR pin to reset the program" />
+                    <Button
+                        Margin="5"
                         Padding="10,0"
                         Command="{Binding UploadFirmwareCommand}"
                         Content="Upload Firmware"
@@ -110,7 +120,6 @@
                     <DataTemplate DataType="{x:Type models:TerminalMessage}">
                         <StackPanel Orientation="Horizontal">
                             <TextBlock FontWeight="Bold" Text="{Binding FormattedHeader}" />
-
                             <TextBox
                                 Margin="5,0,0,0"
                                 Background="Transparent"
@@ -183,21 +192,18 @@
                         <ColumnDefinition Width="Auto" />
                         <ColumnDefinition Width="Auto" />
                     </Grid.ColumnDefinitions>
-
                     <TextBlock
                         Grid.Column="0"
                         Margin="0,0,10,0"
                         VerticalAlignment="Center"
                         FontWeight="SemiBold"
                         Text="{Binding UploadSpeed}" />
-
                     <TextBlock
                         Grid.Column="1"
                         Margin="0,0,10,0"
                         VerticalAlignment="Center"
                         FontWeight="SemiBold"
                         Text="{Binding UploadRemainingTime}" />
-
                     <ProgressBar
                         Grid.Column="2"
                         Width="200"

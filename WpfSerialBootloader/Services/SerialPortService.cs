@@ -1,11 +1,15 @@
-﻿using System.IO.Ports;
+﻿using System;
+using System.IO.Ports;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace WpfSerialBootloader.Services
 {
     /// <summary>
     /// A wrapper service for System.IO.Ports.SerialPort to manage connection and communication.
     /// This version includes a buffer and timer to consolidate fragmented messages.
+    /// It also includes methods for controlling RTS and DTR pins.
     /// </summary>
     public class SerialPortService : IDisposable
     {
@@ -36,7 +40,11 @@ namespace WpfSerialBootloader.Services
 
             serialPort_ = new SerialPort(portName, baudRate)
             {
-                Encoding = Encoding.UTF8
+                Encoding = Encoding.UTF8,
+                // Initialize DTR and RTS to be inactive (high) by default.
+                // This prevents an immediate reset on connect for some boards.
+                DtrEnable = false,
+                RtsEnable = false
             };
             serialPort_.DataReceived += OnDataReceived;
             serialPort_.ErrorReceived += OnErrorReceived;
@@ -77,6 +85,7 @@ namespace WpfSerialBootloader.Services
 
         private void OnErrorReceived(object sender, SerialErrorReceivedEventArgs e)
         {
+            // This can be triggered by unplugging the device
             ConnectionLost?.Invoke();
         }
 
@@ -126,9 +135,47 @@ namespace WpfSerialBootloader.Services
             await serialPort_.BaseStream.WriteAsync(data.AsMemory(), CancellationToken.None);
         }
 
+        /// <summary>
+        /// Toggles the RTS pin for automatic reset before firmware upload.
+        /// Low-active: RtsEnable=true means low signal.
+        /// </summary>
+        /// <param name="downTimeMs">Duration to keep the pin low (ms).</param>
+        /// <param name="waitTimeMs">Duration to wait after releasing the pin (ms).</param>
+        public async Task ToggleRtsForResetAsync(int downTimeMs, int waitTimeMs)
+        {
+            if (serialPort_ == null || !serialPort_.IsOpen)
+                throw new InvalidOperationException("Serial port is not open.");
+
+            // Pull RTS low
+            serialPort_.RtsEnable = true;
+            await Task.Delay(downTimeMs);
+            // Release RTS high
+            serialPort_.RtsEnable = false;
+            // Wait for the device to be ready
+            await Task.Delay(waitTimeMs);
+        }
+
+        /// <summary>
+        /// Pulses the DTR pin to reset the target program.
+        /// Low-active: DtrEnable=true means low signal.
+        /// </summary>
+        /// <param name="pulseDurationMs">Duration to keep the pin low (ms).</param>
+        public async Task PulseDtrAsync(int pulseDurationMs)
+        {
+            if (serialPort_ == null || !serialPort_.IsOpen)
+                throw new InvalidOperationException("Serial port is not open.");
+
+            // Pull DTR low
+            serialPort_.DtrEnable = true;
+            await Task.Delay(pulseDurationMs);
+            // Release DTR high
+            serialPort_.DtrEnable = false;
+        }
+
         public void Dispose()
         {
             Disconnect();
+            GC.SuppressFinalize(this);
         }
     }
 }

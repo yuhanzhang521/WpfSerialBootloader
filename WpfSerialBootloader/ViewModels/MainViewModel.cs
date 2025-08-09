@@ -1,32 +1,41 @@
-﻿// Add this using statement for WMI to get detailed port names.
-// You may need to add the NuGet package: System.Management
-using CommunityToolkit.Mvvm.ComponentModel;
+﻿using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using Microsoft.Win32;
+using System;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Management;
 using System.Text;
+using System.Threading.Tasks;
 using System.Windows;
 using WpfSerialBootloader.Models;
 using WpfSerialBootloader.Services;
 
 namespace WpfSerialBootloader.ViewModels
 {
-    public partial class MainViewModel : ObservableObject
+    public partial class MainViewModel : ObservableObject, IDisposable
     {
         private readonly SerialPortService serialService_;
+
+        // --- New members for hot-plug detection ---
+        private ManagementEventWatcher? _portWatcher;
+        private string _connectedPortName = string.Empty;
+
+        // --- New members for real-time speed calculation ---
+        private long _lastBytesSent;
+        private TimeSpan _lastElapsed;
 
         #region Observable Properties
         [ObservableProperty]
         private ObservableCollection<string> availablePorts = [];
 
         [ObservableProperty]
+        [NotifyPropertyChangedFor(nameof(IsConnectionPossible))]
         private string selectedPort = string.Empty;
 
         [ObservableProperty]
-        [NotifyPropertyChangedFor(nameof(IsConnectionPossible))]
         private int baudRate = Properties.Settings.Default.LastUsedBaudRate;
 
         [ObservableProperty]
@@ -34,6 +43,7 @@ namespace WpfSerialBootloader.ViewModels
         [NotifyCanExecuteChangedFor(nameof(DisconnectCommand))]
         [NotifyCanExecuteChangedFor(nameof(SendCommand))]
         [NotifyCanExecuteChangedFor(nameof(UploadFirmwareCommand))]
+        [NotifyCanExecuteChangedFor(nameof(ResetProgramCommand))] // Notify new command
         private bool isConnected = false;
 
         [ObservableProperty]
@@ -60,7 +70,6 @@ namespace WpfSerialBootloader.ViewModels
 
         #region Public Properties
         public ObservableCollection<TerminalMessage> TerminalOutput { get; } = [];
-
         public bool IsConnectionPossible => !string.IsNullOrEmpty(SelectedPort);
         #endregion
 
@@ -84,7 +93,23 @@ namespace WpfSerialBootloader.ViewModels
                     })
                     .ToList();
 
+                var previouslySelectedPort = SelectedPort;
                 AvailablePorts = new ObservableCollection<string>(detailedPorts);
+
+                // Try to re-select the previously selected port if it still exists
+                if (!string.IsNullOrEmpty(previouslySelectedPort) && AvailablePorts.Contains(previouslySelectedPort))
+                {
+                    SelectedPort = previouslySelectedPort;
+                }
+                else if (AvailablePorts.Any())
+                {
+                    SelectedPort = AvailablePorts[0];
+                }
+                else
+                {
+                    SelectedPort = string.Empty;
+                }
+
                 StatusText = "Refreshed serial ports.";
             }
             catch (Exception ex)
@@ -132,6 +157,24 @@ namespace WpfSerialBootloader.ViewModels
             TerminalOutput.Clear();
             AddLogMessage(MessageDirection.INFO, "--- TERMINAL CLEARED ---");
         }
+
+        // --- New Command for DTR Reset ---
+        [RelayCommand(CanExecute = nameof(IsConnected))]
+        private async Task ResetProgram()
+        {
+            StatusText = "Resetting program via DTR...";
+            AddLogMessage(MessageDirection.INFO, "--- PROGRAM RESET (DTR) ---");
+            try
+            {
+                await serialService_.PulseDtrAsync(100);
+                StatusText = "Program reset complete.";
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Reset failed: {ex.Message}";
+                AddLogMessage(MessageDirection.INFO, $"--- RESET FAILED: {ex.Message} ---");
+            }
+        }
         #endregion
 
         public MainViewModel()
@@ -140,16 +183,15 @@ namespace WpfSerialBootloader.ViewModels
             serialService_.DataReceived += OnSerialDataReceived;
             serialService_.ConnectionLost += OnSerialConnectionLost;
 
+            InitializePortWatcher();
             ScanPorts();
 
             if (AvailablePorts.Any())
             {
-                // Try to restore the last used port
-                var lastUsedPort = Properties.Settings.Default.LastUsedComPort;
-                if (!string.IsNullOrEmpty(lastUsedPort))
+                var lastUsedPortName = Properties.Settings.Default.LastUsedComPort;
+                if (!string.IsNullOrEmpty(lastUsedPortName))
                 {
-                    // Find the port that starts with the saved name (e.g., "COM3")
-                    var portToSelect = AvailablePorts.FirstOrDefault(p => p.StartsWith(lastUsedPort));
+                    var portToSelect = AvailablePorts.FirstOrDefault(p => p.StartsWith(lastUsedPortName));
                     SelectedPort = portToSelect ?? AvailablePorts[0];
                 }
                 else
@@ -165,15 +207,14 @@ namespace WpfSerialBootloader.ViewModels
             if (IsConnected || string.IsNullOrEmpty(SelectedPort)) return;
             try
             {
-                // Extract port name (e.g., "COM3") from the full string "COM3 - Description"
                 string portName = SelectedPort.Split(' ')[0];
+                _connectedPortName = portName; // Store the raw port name for hot-plug check
 
                 serialService_.Connect(portName, BaudRate);
                 IsConnected = true;
                 StatusText = $"Connected to {SelectedPort} at {BaudRate} bps.";
                 AddLogMessage(MessageDirection.INFO, $"--- CONNECTED TO {SelectedPort} ---");
 
-                // Save settings
                 Properties.Settings.Default.LastUsedComPort = portName;
                 Properties.Settings.Default.LastUsedBaudRate = BaudRate;
                 Properties.Settings.Default.Save();
@@ -181,6 +222,7 @@ namespace WpfSerialBootloader.ViewModels
             catch (Exception ex)
             {
                 StatusText = $"Error: {ex.Message}";
+                _connectedPortName = string.Empty;
             }
         }
 
@@ -189,6 +231,7 @@ namespace WpfSerialBootloader.ViewModels
             if (!IsConnected) return;
             serialService_.Disconnect();
             IsConnected = false;
+            _connectedPortName = string.Empty;
             StatusText = "Disconnected.";
             AddLogMessage(MessageDirection.INFO, "--- DISCONNECTED ---");
         }
@@ -225,6 +268,8 @@ namespace WpfSerialBootloader.ViewModels
 
             IsUploading = true;
             UploadProgress = 0;
+            _lastBytesSent = 0; // Reset for real-time speed calculation
+            _lastElapsed = TimeSpan.Zero; // Reset for real-time speed calculation
             var stopwatch = Stopwatch.StartNew();
 
             try
@@ -234,6 +279,12 @@ namespace WpfSerialBootloader.ViewModels
                 AddLogMessage(MessageDirection.INFO, "--- UPLOAD START ---");
                 AddLogMessage(MessageDirection.INFO, $"Preparing to upload '{Path.GetFileName(FirmwareFilePath)}' ({firmware.TotalSize} bytes)");
                 AddLogMessage(MessageDirection.INFO, $"Calculated CRC32: 0x{BitConverter.ToUInt32(firmware.CrcBytes, 0):X8}");
+
+                // --- Automatic Reset via RTS ---
+                StatusText = "Resetting device via RTS...";
+                await serialService_.ToggleRtsForResetAsync(100, 100);
+                AddLogMessage(MessageDirection.INFO, "Device reset via RTS. Starting upload...");
+                // --- End of Reset Logic ---
 
                 StatusText = "Uploading: Sending magic word...";
                 await serialService_.WriteAsync(firmware.MagicBytes);
@@ -303,7 +354,9 @@ namespace WpfSerialBootloader.ViewModels
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
+                if (!IsConnected) return; // Avoid multiple notifications
                 IsConnected = false;
+                _connectedPortName = string.Empty;
                 StatusText = "Error: Device disconnected.";
                 AddLogMessage(MessageDirection.INFO, "--- CONNECTION LOST ---");
             });
@@ -313,7 +366,7 @@ namespace WpfSerialBootloader.ViewModels
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
-                AddLogMessage(MessageDirection.RX, data.Trim());
+                AddLogMessage(MessageDirection.RX, data.TrimEnd());
             });
         }
 
@@ -328,20 +381,81 @@ namespace WpfSerialBootloader.ViewModels
 
         private void UpdateUploadStats(long bytesSent, long totalBytes, TimeSpan elapsed)
         {
+            // --- Real-time speed calculation logic ---
+            var timeDelta = (elapsed - _lastElapsed).TotalSeconds;
+            // Update speed every 250ms for a smoother, less frantic display
+            if (timeDelta > 0.25)
+            {
+                long bytesDelta = bytesSent - _lastBytesSent;
+                double speed = bytesDelta / timeDelta; // Bytes per second
+
+                if (speed > 1024 * 1024)
+                    UploadSpeed = $"{speed / (1024 * 1024):F2} MB/s";
+                else if (speed > 1024)
+                    UploadSpeed = $"{speed / 1024:F2} KB/s";
+                else
+                    UploadSpeed = $"{(int)speed} B/s";
+
+                // Update trackers for the next calculation
+                _lastBytesSent = bytesSent;
+                _lastElapsed = elapsed;
+            }
+
+            // --- Remaining time calculation (based on average speed for stability) ---
             var elapsedSeconds = elapsed.TotalSeconds;
-            if (elapsedSeconds < 0.1) return; // Avoid division by zero or skewed initial readings
+            if (elapsedSeconds > 0.1)
+            {
+                double averageSpeed = bytesSent / elapsedSeconds;
+                double bytesLeft = totalBytes - bytesSent;
+                double remainingSeconds = averageSpeed > 0 ? bytesLeft / averageSpeed : 0;
+                UploadRemainingTime = $"{TimeSpan.FromSeconds(remainingSeconds):m\\:ss}";
+            }
+        }
 
-            double speed = bytesSent / elapsedSeconds; // Bytes per second
-            if (speed > 1024 * 1024)
-                UploadSpeed = $"{speed / (1024 * 1024):F2} MB/s";
-            else if (speed > 1024)
-                UploadSpeed = $"{speed / 1024:F2} KB/s";
-            else
-                UploadSpeed = $"{(int)speed} B/s";
+        // --- Hot-plug detection logic ---
+        private void InitializePortWatcher()
+        {
+            try
+            {
+                var query = new WqlEventQuery("SELECT * FROM __InstanceOperationEvent WITHIN 2 WHERE TargetInstance ISA 'Win32_PnPEntity' AND TargetInstance.Caption LIKE '%(COM%'");
+                _portWatcher = new ManagementEventWatcher(query);
+                _portWatcher.EventArrived += OnPortChanged;
+                _portWatcher.Start();
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to initialize ManagementEventWatcher: {ex.Message}");
+                StatusText = "Could not start port watcher.";
+            }
+        }
 
-            double bytesLeft = totalBytes - bytesSent;
-            double remainingSeconds = speed > 0 ? bytesLeft / speed : 0;
-            UploadRemainingTime = $"{TimeSpan.FromSeconds(remainingSeconds):m\\:ss}";
+        private void OnPortChanged(object sender, EventArrivedEventArgs e)
+        {
+            Application.Current.Dispatcher.Invoke(() =>
+            {
+                // Check if the disconnected port was the one we were using
+                if (e.NewEvent.ClassPath.ClassName == "__InstanceDeletionEvent")
+                {
+                    ManagementBaseObject targetInstance = (ManagementBaseObject)e.NewEvent["TargetInstance"];
+                    string caption = targetInstance["Caption"]?.ToString() ?? "";
+                    if (IsConnected && !string.IsNullOrEmpty(_connectedPortName) && caption.Contains($"({_connectedPortName})"))
+                    {
+                        // Our connected device was just removed.
+                        OnSerialConnectionLost();
+                    }
+                }
+
+                // Rescan ports to update the UI list
+                ScanPorts();
+            });
+        }
+
+        public void Dispose()
+        {
+            _portWatcher?.Stop();
+            _portWatcher?.Dispose();
+            serialService_?.Dispose();
+            GC.SuppressFinalize(this);
         }
         #endregion
     }
