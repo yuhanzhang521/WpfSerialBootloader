@@ -49,7 +49,7 @@ namespace WpfSerialBootloader.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
-        [global::System.Configuration.DefaultSettingValueAttribute("115200")]
+        [global::System.Configuration.DefaultSettingValueAttribute("921600")]
         public int LastUsedBaudRate {
             get {
                 return ((int)(this["LastUsedBaudRate"]));

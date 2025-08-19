@@ -9,7 +9,7 @@
       <Value Profile="(Default)" />
     </Setting>
     <Setting Name="LastUsedBaudRate" Type="System.Int32" Scope="User">
-      <Value Profile="(Default)">115200</Value>
+      <Value Profile="(Default)">921600</Value>
     </Setting>
   </Settings>
 </SettingsFile>
