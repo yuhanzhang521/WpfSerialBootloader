@@ -135,11 +135,20 @@
                                             <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.TX}">
                                                 <Setter Property="Foreground" Value="MediumBlue" />
                                             </DataTrigger>
-                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX}">
-                                                <Setter Property="Foreground" Value="Green" />
-                                            </DataTrigger>
                                             <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.INFO}">
                                                 <Setter Property="Foreground" Value="DarkSlateGray" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX_INFO}">
+                                                <Setter Property="Foreground" Value="Green" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX_DEBUG}">
+                                                <Setter Property="Foreground" Value="Gray" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX_WARN}">
+                                                <Setter Property="Foreground" Value="OrangeRed" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Direction}" Value="{x:Static models:MessageDirection.RX_ERROR}">
+                                                <Setter Property="Foreground" Value="Red" />
                                             </DataTrigger>
                                         </Style.Triggers>
                                     </Style>

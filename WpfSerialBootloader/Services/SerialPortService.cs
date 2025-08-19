@@ -1,24 +1,19 @@
-﻿using System;
-using System.IO.Ports;
+﻿using System.IO.Ports;
 using System.Text;
-using System.Threading;
-using System.Threading.Tasks;
 
 namespace WpfSerialBootloader.Services
 {
     /// <summary>
     /// A wrapper service for System.IO.Ports.SerialPort to manage connection and communication.
-    /// This version includes a buffer and timer to consolidate fragmented messages.
-    /// It also includes methods for controlling RTS and DTR pins.
+    /// This version intelligently splits messages based on new log prefixes or newlines
+    /// to handle interleaved/interrupted log messages correctly.
     /// </summary>
     public class SerialPortService : IDisposable
     {
-        // --- New members for the buffering mechanism ---
-        private const int ReceiveTimeoutMs = 10;
-        private readonly StringBuilder _receiveBuffer = new();
-        private readonly object _bufferLock = new();
-        private Timer? _receiveTimer;
-        // --- End of new members ---
+        private const int ReceiveTimeoutMs = 20;
+        private readonly StringBuilder receiveBuffer_ = new();
+        private readonly object bufferLock_ = new();
+        private Timer? receiveTimer_;
 
         private SerialPort? serialPort_;
 
@@ -35,14 +30,11 @@ namespace WpfSerialBootloader.Services
         {
             if (IsOpen) Disconnect();
 
-            // Instantiate the timer that will fire when data reception has paused.
-            _receiveTimer = new Timer(OnReceiveTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
+            receiveTimer_ = new Timer(OnReceiveTimerElapsed, null, Timeout.Infinite, Timeout.Infinite);
 
             serialPort_ = new SerialPort(portName, baudRate)
             {
                 Encoding = Encoding.UTF8,
-                // Initialize DTR and RTS to be inactive (high) by default.
-                // This prevents an immediate reset on connect for some boards.
                 DtrEnable = false,
                 RtsEnable = false
             };
@@ -56,7 +48,7 @@ namespace WpfSerialBootloader.Services
             catch (Exception)
             {
                 serialPort_ = null;
-                throw; // Rethrow to be caught by ViewModel
+                throw;
             }
         }
 
@@ -74,57 +66,113 @@ namespace WpfSerialBootloader.Services
                 serialPort_ = null;
             }
 
-            // Dispose the timer and clear the buffer
-            _receiveTimer?.Dispose();
-            _receiveTimer = null;
-            lock (_bufferLock)
+            receiveTimer_?.Dispose();
+            receiveTimer_ = null;
+            lock (bufferLock_)
             {
-                _receiveBuffer.Clear();
+                receiveBuffer_.Clear();
             }
         }
 
         private void OnErrorReceived(object sender, SerialErrorReceivedEventArgs e)
         {
-            // This can be triggered by unplugging the device
             ConnectionLost?.Invoke();
         }
 
-        // This method is now responsible for buffering data and resetting the timer.
+        /// <summary>
+        /// Processes incoming data, splitting messages by newline or by interrupting log prefixes.
+        /// </summary>
         private void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
         {
             if (serialPort_ == null || !serialPort_.IsOpen) return;
             try
             {
-                string data = serialPort_.ReadExisting();
+                string newData = serialPort_.ReadExisting();
+                string allMessagesToProcess = string.Empty;
 
-                lock (_bufferLock)
+                Console.Write(newData);
+
+                lock (bufferLock_)
                 {
-                    _receiveBuffer.Append(data);
-                }
+                    receiveBuffer_.Append(newData);
+                    // Stop any pending timer since we're about to process now.
+                    receiveTimer_?.Change(Timeout.Infinite, Timeout.Infinite);
 
-                // Reset the timer to fire after the timeout period.
-                // If more data arrives, this line will execute again, pushing the timer back.
-                _receiveTimer?.Change(ReceiveTimeoutMs, Timeout.Infinite);
+                    string[] prefixes = { "[D]", "[I]", "[W]", "[E]" };
+
+                    while (receiveBuffer_.Length > 0)
+                    {
+                        string currentBuffer = receiveBuffer_.ToString();
+                        int splitEnd = -1;
+
+                        // Find the first newline.
+                        int newlineIndex = currentBuffer.IndexOf('\n');
+
+                        // Find the first occurrence of a log prefix, but NOT at the very beginning (index 0).
+                        // This identifies an *interrupting* prefix.
+                        int prefixIndex = prefixes
+                            .Select(p => currentBuffer.IndexOf(p, 1))
+                            .Where(i => i != -1)
+                            .DefaultIfEmpty(-1)
+                            .Min();
+                        if (prefixIndex == -1) prefixIndex = -1; // Correctly handle case where no prefix is found.
+
+                        // --- Decision Logic ---
+                        if (prefixIndex != -1 && (newlineIndex == -1 || prefixIndex < newlineIndex))
+                        {
+                            // Case 1: An interrupting prefix is found before any newline.
+                            // The message is the text *before* the prefix.
+                            splitEnd = prefixIndex;
+                        }
+                        else if (newlineIndex != -1)
+                        {
+                            // Case 2: A newline is found, and it's the first significant terminator.
+                            // The message is the line *including* the newline.
+                            splitEnd = newlineIndex + 1;
+                        }
+                        else
+                        {
+                            // Case 3: No terminators found. We need more data.
+                            break;
+                        }
+
+                        // Queue the determined message for processing and remove it from the buffer.
+                        allMessagesToProcess += currentBuffer.Substring(0, splitEnd);
+                        receiveBuffer_.Remove(0, splitEnd);
+                    }
+
+                    // If there's anything left in the buffer, it's an incomplete fragment.
+                    // Start the timer to flush it if nothing else arrives.
+                    if (receiveBuffer_.Length > 0)
+                    {
+                        receiveTimer_?.Change(ReceiveTimeoutMs, Timeout.Infinite);
+                    }
+                } // End lock
+
+                // Process all extracted messages outside the lock.
+                if (!string.IsNullOrEmpty(allMessagesToProcess))
+                {
+                    DataReceived?.Invoke(allMessagesToProcess);
+                }
             }
             catch (Exception)
             {
-                // Ignore errors during read if port is closing
+                // Ignore read errors.
             }
         }
 
-        // This new method is the callback for our timer.
-        // It fires when the data stream has been quiet for ReceiveTimeoutMs.
+        /// <summary>
+        /// Fallback to flush the buffer if data sits for too long without a terminator.
+        /// </summary>
         private void OnReceiveTimerElapsed(object? state)
         {
             string message;
-            lock (_bufferLock)
+            lock (bufferLock_)
             {
-                if (_receiveBuffer.Length == 0) return;
-                message = _receiveBuffer.ToString();
-                _receiveBuffer.Clear();
+                if (receiveBuffer_.Length == 0) return;
+                message = receiveBuffer_.ToString();
+                receiveBuffer_.Clear();
             }
-
-            // Invoke the event with the consolidated message.
             DataReceived?.Invoke(message);
         }
 
@@ -135,40 +183,24 @@ namespace WpfSerialBootloader.Services
             await serialPort_.BaseStream.WriteAsync(data.AsMemory(), CancellationToken.None);
         }
 
-        /// <summary>
-        /// Toggles the RTS pin for automatic reset before firmware upload.
-        /// Low-active: RtsEnable=true means low signal.
-        /// </summary>
-        /// <param name="downTimeMs">Duration to keep the pin low (ms).</param>
-        /// <param name="waitTimeMs">Duration to wait after releasing the pin (ms).</param>
         public async Task ToggleRtsForResetAsync(int downTimeMs, int waitTimeMs)
         {
             if (serialPort_ == null || !serialPort_.IsOpen)
                 throw new InvalidOperationException("Serial port is not open.");
 
-            // Pull RTS low
             serialPort_.RtsEnable = true;
             await Task.Delay(downTimeMs);
-            // Release RTS high
             serialPort_.RtsEnable = false;
-            // Wait for the device to be ready
             await Task.Delay(waitTimeMs);
         }
 
-        /// <summary>
-        /// Pulses the DTR pin to reset the target program.
-        /// Low-active: DtrEnable=true means low signal.
-        /// </summary>
-        /// <param name="pulseDurationMs">Duration to keep the pin low (ms).</param>
         public async Task PulseDtrAsync(int pulseDurationMs)
         {
             if (serialPort_ == null || !serialPort_.IsOpen)
                 throw new InvalidOperationException("Serial port is not open.");
 
-            // Pull DTR low
             serialPort_.DtrEnable = true;
             await Task.Delay(pulseDurationMs);
-            // Release DTR high
             serialPort_.DtrEnable = false;
         }
 

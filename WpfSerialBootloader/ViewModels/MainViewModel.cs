@@ -366,7 +366,47 @@ namespace WpfSerialBootloader.ViewModels
         {
             Application.Current.Dispatcher.Invoke(() =>
             {
-                AddLogMessage(MessageDirection.RX, data.TrimEnd());
+                // Split the received data into individual lines
+                var lines = data.Split(["\r\n", "\r", "\n"], StringSplitOptions.RemoveEmptyEntries);
+
+                foreach (var line in lines)
+                {
+                    // Trim the line to handle potential leading/trailing whitespace
+                    var trimmedLine = line.Trim();
+                    MessageDirection direction;
+                    string content;
+
+                    // Check for log level prefixes
+                    if (trimmedLine.StartsWith("[E]"))
+                    {
+                        direction = MessageDirection.RX_ERROR;
+                        content = trimmedLine;
+                    }
+                    else if (trimmedLine.StartsWith("[W]"))
+                    {
+                        direction = MessageDirection.RX_WARN;
+                        content = trimmedLine;
+                    }
+                    else if (trimmedLine.StartsWith("[I]"))
+                    {
+                        direction = MessageDirection.RX_INFO;
+                        content = trimmedLine;
+                    }
+                    // A new prefix for Debug level, assuming "[D]"
+                    else if (trimmedLine.StartsWith("[D]"))
+                    {
+                        direction = MessageDirection.RX_DEBUG;
+                        content = trimmedLine;
+                    }
+                    else
+                    {
+                        // If no prefix matches, treat it as default received data
+                        direction = MessageDirection.RX_DEFAULT;
+                        content = trimmedLine;
+                    }
+
+                    AddLogMessage(direction, content);
+                }
             });
         }
 
